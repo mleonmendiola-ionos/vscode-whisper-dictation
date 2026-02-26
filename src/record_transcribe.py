@@ -5,6 +5,8 @@ Usage: python record_transcribe.py <model_name> <language> <cache_dir>
 Protocol: LOADING → READY → (START → RECORDING → STOP → RESULT/ERROR) × N
 """
 import sys, os, threading, tempfile, wave
+sys.stdout.reconfigure(encoding='utf-8')
+sys.stdin.reconfigure(encoding='utf-8')
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
