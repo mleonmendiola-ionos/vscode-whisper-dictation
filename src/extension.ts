@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as https from 'https';
-import { spawn, spawnSync, exec, ChildProcessWithoutNullStreams } from 'child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'child_process';
 import * as crypto from 'crypto';
 
 let panel: vscode.WebviewPanel | undefined;
@@ -413,19 +413,19 @@ function downloadAndInstall(url: string, filename: string) {
       res.pipe(file);
       file.on('finish', () => {
         file.close();
-        exec(`code --install-extension "${dest}"`, (err) => {
-          if (err) {
+        vscode.commands
+          .executeCommand('workbench.extensions.installExtension', vscode.Uri.file(dest))
+          .then(() => {
+            vscode.window
+              .showInformationMessage('Updated! Reload VS Code to apply.', 'Reload')
+              .then((choice) => {
+                if (choice === 'Reload') {
+                  vscode.commands.executeCommand('workbench.action.reloadWindow');
+                }
+              });
+          }, (err: Error) => {
             vscode.window.showErrorMessage(`Failed to install update: ${err.message}`);
-            return;
-          }
-          vscode.window
-            .showInformationMessage('Updated! Reload VS Code to apply.', 'Reload')
-            .then((choice) => {
-              if (choice === 'Reload') {
-                vscode.commands.executeCommand('workbench.action.reloadWindow');
-              }
-            });
-        });
+          });
       });
     }).on('error', () => {
       file.close();
