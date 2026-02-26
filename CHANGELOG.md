@@ -3,6 +3,11 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.0] - 2026-02-26
+
+### Added
+- Auto-update check on extension activation: fetches the latest GitHub release and offers to update if a newer version is available
+
 ## [1.1.0] - 2026-02-26
 
 ### Added

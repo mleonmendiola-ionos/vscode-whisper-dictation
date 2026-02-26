@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'child_process';
+import * as https from 'https';
+import { spawn, spawnSync, exec, ChildProcessWithoutNullStreams } from 'child_process';
 import * as crypto from 'crypto';
 
 let panel: vscode.WebviewPanel | undefined;
@@ -11,6 +12,8 @@ let stdoutBuffer = '';
 let pythonReady  = false;
 
 export function activate(context: vscode.ExtensionContext) {
+  checkForUpdates(context);
+
   const disposable = vscode.commands.registerCommand('whisper-dictation.toggle', () => {
     if (panel) {
       panel.reveal();
@@ -326,6 +329,111 @@ function getWebviewContent(nonce: string): string {
   </script>
 </body>
 </html>`;
+}
+
+function checkForUpdates(context: vscode.ExtensionContext) {
+  try {
+    const currentVersion: string = context.extension.packageJSON.version;
+
+    const options = {
+      hostname: 'api.github.com',
+      path: '/repos/mleonmendiola-ionos/vscode-whisper-dictation/releases/latest',
+      headers: { 'User-Agent': 'vscode-whisper-dictation' }
+    };
+
+    https.get(options, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return; }
+
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const release = JSON.parse(body);
+          const remoteTag: string = release.tag_name ?? '';
+          const remoteVersion = remoteTag.replace(/^v/, '');
+
+          if (!isNewer(remoteVersion, currentVersion)) return;
+
+          const vsixAsset = (release.assets as Array<{ name: string; browser_download_url: string }>)
+            ?.find((a) => a.name.endsWith('.vsix'));
+          if (!vsixAsset) return;
+
+          vscode.window
+            .showInformationMessage(
+              `Voice Dictation v${remoteVersion} is available. Update?`,
+              'Update'
+            )
+            .then((choice) => {
+              if (choice !== 'Update') return;
+              downloadAndInstall(vsixAsset.browser_download_url, vsixAsset.name);
+            });
+        } catch {
+          // ignore parse errors
+        }
+      });
+    }).on('error', () => {
+      // fail silently — offline or API unreachable
+    });
+  } catch {
+    // fail silently
+  }
+}
+
+function isNewer(remote: string, local: string): boolean {
+  const r = remote.split('.').map(Number);
+  const l = local.split('.').map(Number);
+  for (let i = 0; i < Math.max(r.length, l.length); i++) {
+    const rp = r[i] ?? 0;
+    const lp = l[i] ?? 0;
+    if (rp > lp) return true;
+    if (rp < lp) return false;
+  }
+  return false;
+}
+
+function downloadAndInstall(url: string, filename: string) {
+  const tmpDir = os.tmpdir();
+  const dest = path.join(tmpDir, filename);
+  const file = fs.createWriteStream(dest);
+
+  const get = (targetUrl: string) => {
+    https.get(targetUrl, { headers: { 'User-Agent': 'vscode-whisper-dictation' } }, (res) => {
+      // follow redirects (GitHub sends 302 to the CDN)
+      if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+        res.resume();
+        get(res.headers.location);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        file.close();
+        vscode.window.showErrorMessage('Failed to download update.');
+        return;
+      }
+      res.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        exec(`code --install-extension "${dest}"`, (err) => {
+          if (err) {
+            vscode.window.showErrorMessage(`Failed to install update: ${err.message}`);
+            return;
+          }
+          vscode.window
+            .showInformationMessage('Updated! Reload VS Code to apply.', 'Reload')
+            .then((choice) => {
+              if (choice === 'Reload') {
+                vscode.commands.executeCommand('workbench.action.reloadWindow');
+              }
+            });
+        });
+      });
+    }).on('error', () => {
+      file.close();
+      vscode.window.showErrorMessage('Failed to download update.');
+    });
+  };
+
+  get(url);
 }
 
 export function deactivate() {
