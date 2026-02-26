@@ -2,8 +2,6 @@
 
 **Dictate text directly in VS Code using local Whisper. No internet, no external APIs.**
 
-![version](https://img.shields.io/badge/version-1.1.0-blue)
-
 ---
 
 ## Features
