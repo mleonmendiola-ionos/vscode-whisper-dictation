@@ -7,8 +7,8 @@ import * as crypto from 'crypto';
 
 let panel: vscode.WebviewPanel | undefined;
 let pythonProcess: ChildProcessWithoutNullStreams | undefined;
-let pythonOutput = '';
-let pythonError  = '';
+let stdoutBuffer = '';
+let pythonReady  = false;
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand('whisper-dictation.toggle', () => {
@@ -19,7 +19,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     panel = vscode.window.createWebviewPanel(
       'whisperDictation',
-      '🎤 Dictado por Voz',
+      '🎤 Voice Dictation',
       vscode.ViewColumn.Beside,
       {
         enableScripts: true,
@@ -33,7 +33,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     panel.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'start') {
-        await startRecording(context);
+        startRecording();
       } else if (message.type === 'stop') {
         stopRecording();
       }
@@ -43,85 +43,114 @@ export function activate(context: vscode.ExtensionContext) {
       killPythonProcess();
       panel = undefined;
     });
+
+    spawnPythonDaemon(context);
   });
 
   context.subscriptions.push(disposable);
 }
 
-async function startRecording(context: vscode.ExtensionContext) {
+function spawnPythonDaemon(context: vscode.ExtensionContext) {
   const scriptPath = path.join(context.extensionPath, 'src', 'record_transcribe.py');
   const cacheDir = path.join(context.globalStorageUri.fsPath, 'models');
   fs.mkdirSync(cacheDir, { recursive: true });
 
   const uvPath = findUv();
   if (!uvPath) {
-    vscode.window.showErrorMessage('No se encontró "uv". Instálalo desde https://docs.astral.sh/uv/');
-    panel?.webview.postMessage({ type: 'error', text: 'uv no encontrado' });
+    vscode.window.showErrorMessage('"uv" not found. Install it from https://docs.astral.sh/uv/');
+    panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
     return;
   }
 
-  pythonOutput = '';
-  pythonError  = '';
+  stdoutBuffer = '';
+  pythonReady  = false;
 
   pythonProcess = spawn(
     uvPath,
-    ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper', 'python', scriptPath, 'small', 'es', cacheDir],
+    ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper',
+     'python', scriptPath, 'small', 'es', cacheDir],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   ) as ChildProcessWithoutNullStreams;
 
   pythonProcess.stdout.on('data', (data: Buffer) => {
-    const text = data.toString();
-    if (text.startsWith('READY')) {
-      panel?.webview.postMessage({ type: 'status', text: 'Grabando...' });
-    } else {
-      pythonOutput += text;
+    stdoutBuffer += data.toString();
+    const lines = stdoutBuffer.split('\n');
+    stdoutBuffer = lines.pop() ?? '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed) handlePythonLine(trimmed);
     }
   });
 
-  pythonProcess.stderr.on('data', (data: Buffer) => {
-    pythonError += data.toString();
+  pythonProcess.stderr.on('data', (_data: Buffer) => {
+    // stderr is for uv/Python internal logs; ignore unless debugging
   });
 
-  pythonProcess.on('close', async (code: number | null) => {
-    const text = pythonOutput.trim();
+  pythonProcess.on('close', (_code: number | null) => {
     pythonProcess = undefined;
-
-    if (code !== 0 || !text) {
-      const errMsg = pythonError.trim() || `Proceso terminó con código ${code}`;
-      vscode.window.showErrorMessage(`Error al grabar/transcribir: ${errMsg}`);
-      panel?.webview.postMessage({ type: 'error', text: errMsg });
-      return;
-    }
-
-    await vscode.env.clipboard.writeText(text);
-    vscode.window.showInformationMessage(`✓ Copiado: "${text}"`);
-    panel?.webview.postMessage({ type: 'result', text });
+    pythonReady   = false;
+    panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
   });
 
   pythonProcess.on('error', (err: Error) => {
-    vscode.window.showErrorMessage(`No se pudo iniciar Python: ${err.message}`);
-    panel?.webview.postMessage({ type: 'error', text: err.message });
+    vscode.window.showErrorMessage(`Failed to start Python: ${err.message}`);
+    panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
     pythonProcess = undefined;
   });
+}
 
-  panel?.webview.postMessage({ type: 'status', text: 'Iniciando grabación...' });
+function handlePythonLine(line: string) {
+  if (line === 'LOADING') {
+    panel?.webview.postMessage({ type: 'state', state: 'LOADING' });
+  } else if (line === 'READY') {
+    pythonReady = true;
+    panel?.webview.postMessage({ type: 'state', state: 'READY' });
+  } else if (line === 'RECORDING') {
+    panel?.webview.postMessage({ type: 'state', state: 'RECORDING' });
+  } else if (line.startsWith('RESULT:')) {
+    const text = line.slice('RESULT:'.length);
+    vscode.env.clipboard.writeText(text);
+    vscode.window.showInformationMessage(`✓ Copied: "${text}"`);
+    panel?.webview.postMessage({ type: 'result', text });
+  } else if (line.startsWith('ERROR:')) {
+    const msg = line.slice('ERROR:'.length);
+    vscode.window.showErrorMessage(`Error: ${msg}`);
+    panel?.webview.postMessage({ type: 'state', state: 'ERROR', text: msg });
+    setTimeout(() => {
+      if (pythonReady) {
+        panel?.webview.postMessage({ type: 'state', state: 'READY' });
+      }
+    }, 3000);
+  }
+}
+
+function startRecording() {
+  if (!pythonProcess || !pythonReady) {
+    vscode.window.showWarningMessage('The model is still loading. Please wait a moment.');
+    return;
+  }
+  try {
+    pythonProcess.stdin.write('START\n');
+  } catch {
+    // process already terminated
+  }
 }
 
 function stopRecording() {
   if (!pythonProcess) return;
   try {
-    pythonProcess.stdin.write('\n');
-    pythonProcess.stdin.end();
+    pythonProcess.stdin.write('STOP\n');
   } catch {
-    // proceso ya terminó
+    // process already terminated
   }
-  panel?.webview.postMessage({ type: 'status', text: 'Transcribiendo...' });
+  panel?.webview.postMessage({ type: 'state', state: 'TRANSCRIBING' });
 }
 
 function killPythonProcess() {
   if (pythonProcess) {
     try { pythonProcess.kill(); } catch { /* ignore */ }
     pythonProcess = undefined;
+    pythonReady   = false;
   }
 }
 
@@ -144,12 +173,12 @@ function findUv(): string | undefined {
 
 function getWebviewContent(nonce: string): string {
   return /* html */`<!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dictado por Voz</title>
+  <title>Voice Dictation</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -185,9 +214,18 @@ function getWebviewContent(nonce: string): string {
       border-color: #cc3333;
       animation: pulse 1s infinite;
     }
+    #btn.loading {
+      animation: spin 1.5s linear infinite;
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
     @keyframes pulse {
       0%, 100% { transform: scale(1); }
       50% { transform: scale(1.05); }
+    }
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(360deg); }
     }
     #status {
       font-size: 13px;
@@ -215,53 +253,73 @@ function getWebviewContent(nonce: string): string {
   </style>
 </head>
 <body>
-  <button id="btn" title="Haz clic para grabar">🎤</button>
-  <div id="status">Haz clic para empezar a grabar</div>
+  <button id="btn" disabled title="Loading model...">⏳</button>
+  <div id="status">Loading model...</div>
   <div id="result"></div>
-  <div id="hint">El texto se copia al portapapeles automáticamente.<br>Pega con Ctrl+V donde lo necesites.</div>
+  <div id="hint">Text is automatically copied to the clipboard.<br>Paste with Ctrl+V wherever you need it.</div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    const btn = document.getElementById('btn');
+    const btn    = document.getElementById('btn');
     const status = document.getElementById('status');
     const result = document.getElementById('result');
 
-    let isRecording = false;
+    // States: LOADING | READY | RECORDING | TRANSCRIBING | ERROR | DEAD
+    function setUiState(state, text) {
+      btn.classList.remove('recording', 'loading');
+      switch (state) {
+        case 'LOADING':
+          btn.disabled = true;
+          btn.classList.add('loading');
+          btn.textContent = '⏳';
+          status.textContent = 'Loading model...';
+          break;
+        case 'READY':
+          btn.disabled = false;
+          btn.textContent = '🎤';
+          status.textContent = 'Ready to record';
+          break;
+        case 'RECORDING':
+          btn.disabled = false;
+          btn.classList.add('recording');
+          btn.textContent = '⏹';
+          status.textContent = 'Recording...';
+          break;
+        case 'TRANSCRIBING':
+          btn.disabled = true;
+          btn.textContent = '⏳';
+          status.textContent = 'Transcribing...';
+          break;
+        case 'ERROR':
+          btn.disabled = true;
+          btn.textContent = '⚠️';
+          status.textContent = text ? ('✗ ' + text) : '✗ Error';
+          break;
+        case 'DEAD':
+          btn.disabled = true;
+          btn.textContent = '⚠️';
+          status.textContent = 'Process terminated. Close and reopen the panel.';
+          break;
+      }
+    }
 
     btn.addEventListener('click', () => {
-      if (isRecording) {
+      if (btn.classList.contains('recording')) {
         vscode.postMessage({ type: 'stop' });
-        btn.disabled = true;
+        setUiState('TRANSCRIBING');
       } else {
-        isRecording = true;
-        btn.classList.add('recording');
-        btn.textContent = '⏹';
         result.textContent = '';
-        status.textContent = 'Iniciando grabación...';
         vscode.postMessage({ type: 'start' });
       }
     });
 
     window.addEventListener('message', (event) => {
       const msg = event.data;
-      if (msg.type === 'result') {
-        isRecording = false;
-        btn.disabled = false;
-        btn.classList.remove('recording');
-        btn.textContent = '🎤';
-        status.textContent = '✓ Copiado al portapapeles';
-        result.textContent = msg.text;
-      } else if (msg.type === 'status') {
-        status.textContent = msg.text;
-        if (msg.text.includes('Grabando')) {
-          btn.disabled = false;
-        }
-      } else if (msg.type === 'error') {
-        isRecording = false;
-        btn.disabled = false;
-        btn.classList.remove('recording');
-        btn.textContent = '🎤';
-        status.textContent = '✗ Error';
+      if (msg.type === 'state') {
+        setUiState(msg.state, msg.text);
+      } else if (msg.type === 'result') {
+        setUiState('READY');
+        status.textContent = '✓ Copied to clipboard';
         result.textContent = msg.text;
       }
     });

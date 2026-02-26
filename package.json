@@ -1,18 +1,33 @@
 {
   "publisher": "mleon",
   "name": "vscode-whisper-dictation",
-  "displayName": "Dictado por Voz",
-  "description": "Dicta texto con Whisper local y cópialo al portapapeles",
-  "version": "0.1.0",
-  "engines": { "vscode": "^1.80.0" },
-  "categories": ["Other"],
+  "displayName": "Voice Dictation",
+  "description": "Local voice dictation with Whisper. No internet, no APIs. Records, transcribes and copies to clipboard.",
+  "version": "1.1.0",
+  "icon": "Logo.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": ["dictation", "voice", "whisper", "speech-to-text", "transcription"],
+  "author": "Manuel León",
+  "contributors": [
+    { "name": "Claude (Anthropic)", "url": "https://claude.ai" }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mleonmendiola-ionos/vscode-whisper-dictation"
+  },
+  "license": "MIT",
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "whisper-dictation.toggle",
-        "title": "Dictado: Abrir panel de voz",
+        "title": "Dictation: Open voice panel",
         "icon": "$(mic)"
       }
     ],
@@ -39,6 +54,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.20.0",
     "typescript": "^5.0.0"
   }
