@@ -3,6 +3,14 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.3.0] - 2026-02-26
+
+### Removed
+- `update.ps1` script — replaced by built-in auto-update on VS Code startup
+
+### Changed
+- Simplified installation instructions in README
+
 ## [1.2.5] - 2026-02-26
 
 ### Fixed
