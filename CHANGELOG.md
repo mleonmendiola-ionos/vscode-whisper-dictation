@@ -3,6 +3,11 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.3] - 2026-02-26
+
+### Fixed
+- Auto-update now uses VS Code internal API instead of CLI, preserving user settings (auto-update checkbox)
+
 ## [1.2.2] - 2026-02-26
 
 ### Removed
