@@ -3,7 +3,7 @@
   "name": "vscode-whisper-dictation",
   "displayName": "Voice Dictation",
   "description": "Local voice dictation with Whisper. No internet, no APIs. Records, transcribes and copies to clipboard.",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "icon": "Logo.png",
   "engines": {
     "vscode": "^1.80.0"
