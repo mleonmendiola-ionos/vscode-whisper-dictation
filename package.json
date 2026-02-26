@@ -1,0 +1,44 @@
+{
+  "name": "vscode-whisper-dictation",
+  "displayName": "Dictado por Voz",
+  "description": "Dicta texto con Whisper local y cópialo al portapapeles",
+  "version": "0.1.0",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "whisper-dictation.toggle",
+        "title": "Dictado: Abrir panel de voz",
+        "icon": "$(mic)"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "whisper-dictation.toggle",
+        "key": "ctrl+shift+v"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "whisper-dictation.toggle",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs --sourcemap",
+    "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --platform=node --format=cjs --watch",
+    "package": "npm run build && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.0.0"
+  }
+}
