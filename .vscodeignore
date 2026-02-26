@@ -1,4 +1,6 @@
-node_modules/**
 src/**/*.ts
-tsconfig.json
+node_modules/**
 .gitignore
+tsconfig.json
+package-lock.json
+out/**/*.map

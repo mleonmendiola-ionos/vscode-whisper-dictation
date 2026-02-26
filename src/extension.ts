@@ -2,9 +2,13 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { execFile } from 'child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'child_process';
+import * as crypto from 'crypto';
 
 let panel: vscode.WebviewPanel | undefined;
+let pythonProcess: ChildProcessWithoutNullStreams | undefined;
+let pythonOutput = '';
+let pythonError  = '';
 
 export function activate(context: vscode.ExtensionContext) {
   const disposable = vscode.commands.registerCommand('whisper-dictation.toggle', () => {
@@ -24,15 +28,19 @@ export function activate(context: vscode.ExtensionContext) {
       }
     );
 
-    panel.webview.html = getWebviewContent();
+    const nonce = crypto.randomBytes(16).toString('hex');
+    panel.webview.html = getWebviewContent(nonce);
 
     panel.webview.onDidReceiveMessage(async (message) => {
-      if (message.type === 'audio') {
-        await transcribeAudio(message.data, context);
+      if (message.type === 'start') {
+        await startRecording(context);
+      } else if (message.type === 'stop') {
+        stopRecording();
       }
     });
 
     panel.onDidDispose(() => {
+      killPythonProcess();
       panel = undefined;
     });
   });
@@ -40,61 +48,80 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(disposable);
 }
 
-async function transcribeAudio(base64Wav: string, context: vscode.ExtensionContext) {
-  const tmpFile = path.join(os.tmpdir(), `whisper_${Date.now()}.wav`);
+async function startRecording(context: vscode.ExtensionContext) {
+  const scriptPath = path.join(context.extensionPath, 'src', 'record_transcribe.py');
+  const cacheDir = path.join(context.globalStorageUri.fsPath, 'models');
+  fs.mkdirSync(cacheDir, { recursive: true });
 
-  try {
-    // Guardar WAV temporal
-    const buffer = Buffer.from(base64Wav, 'base64');
-    fs.writeFileSync(tmpFile, buffer);
+  const uvPath = findUv();
+  if (!uvPath) {
+    vscode.window.showErrorMessage('No se encontró "uv". Instálalo desde https://docs.astral.sh/uv/');
+    panel?.webview.postMessage({ type: 'error', text: 'uv no encontrado' });
+    return;
+  }
 
-    // Ruta al script Python y caché de modelos
-    const scriptPath = path.join(context.extensionPath, 'src', 'transcribe.py');
-    const cacheDir = path.join(context.globalStorageUri.fsPath, 'models');
-    fs.mkdirSync(cacheDir, { recursive: true });
+  pythonOutput = '';
+  pythonError  = '';
 
-    // Buscar uv
-    const uvPath = findUv();
-    if (!uvPath) {
-      vscode.window.showErrorMessage('No se encontró "uv". Instálalo desde https://docs.astral.sh/uv/');
+  pythonProcess = spawn(
+    uvPath,
+    ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper', 'python', scriptPath, 'small', 'es', cacheDir],
+    { stdio: ['pipe', 'pipe', 'pipe'] }
+  ) as ChildProcessWithoutNullStreams;
+
+  pythonProcess.stdout.on('data', (data: Buffer) => {
+    const text = data.toString();
+    if (text.startsWith('READY')) {
+      panel?.webview.postMessage({ type: 'status', text: 'Grabando...' });
+    } else {
+      pythonOutput += text;
+    }
+  });
+
+  pythonProcess.stderr.on('data', (data: Buffer) => {
+    pythonError += data.toString();
+  });
+
+  pythonProcess.on('close', async (code: number | null) => {
+    const text = pythonOutput.trim();
+    pythonProcess = undefined;
+
+    if (code !== 0 || !text) {
+      const errMsg = pythonError.trim() || `Proceso terminó con código ${code}`;
+      vscode.window.showErrorMessage(`Error al grabar/transcribir: ${errMsg}`);
+      panel?.webview.postMessage({ type: 'error', text: errMsg });
       return;
     }
 
-    panel?.webview.postMessage({ type: 'status', text: 'Transcribiendo...' });
+    await vscode.env.clipboard.writeText(text);
+    vscode.window.showInformationMessage(`✓ Copiado: "${text}"`);
+    panel?.webview.postMessage({ type: 'result', text });
+  });
 
-    await vscode.window.withProgress(
-      { location: vscode.ProgressLocation.Notification, title: '🎤 Transcribiendo audio...', cancellable: false },
-      () => new Promise<void>((resolve, reject) => {
-        execFile(
-          uvPath,
-          ['run', '--with', 'faster-whisper', 'python', scriptPath, tmpFile, 'small', 'es', cacheDir],
-          { timeout: 60000 },
-          async (error, stdout, stderr) => {
-            if (error) {
-              vscode.window.showErrorMessage(`Error al transcribir: ${stderr || error.message}`);
-              panel?.webview.postMessage({ type: 'error', text: stderr || error.message });
-              reject(error);
-              return;
-            }
+  pythonProcess.on('error', (err: Error) => {
+    vscode.window.showErrorMessage(`No se pudo iniciar Python: ${err.message}`);
+    panel?.webview.postMessage({ type: 'error', text: err.message });
+    pythonProcess = undefined;
+  });
 
-            const text = stdout.trim();
-            if (!text) {
-              vscode.window.showWarningMessage('No se detectó texto en el audio.');
-              panel?.webview.postMessage({ type: 'status', text: 'Sin resultado. ¿Grabaste algo?' });
-              resolve();
-              return;
-            }
+  panel?.webview.postMessage({ type: 'status', text: 'Iniciando grabación...' });
+}
 
-            await vscode.env.clipboard.writeText(text);
-            vscode.window.showInformationMessage(`✓ Copiado: "${text}"`);
-            panel?.webview.postMessage({ type: 'result', text });
-            resolve();
-          }
-        );
-      })
-    );
-  } finally {
-    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+function stopRecording() {
+  if (!pythonProcess) return;
+  try {
+    pythonProcess.stdin.write('\n');
+    pythonProcess.stdin.end();
+  } catch {
+    // proceso ya terminó
+  }
+  panel?.webview.postMessage({ type: 'status', text: 'Transcribiendo...' });
+}
+
+function killPythonProcess() {
+  if (pythonProcess) {
+    try { pythonProcess.kill(); } catch { /* ignore */ }
+    pythonProcess = undefined;
   }
 }
 
@@ -102,20 +129,25 @@ function findUv(): string | undefined {
   const candidates = [
     path.join(os.homedir(), '.local', 'bin', 'uv.exe'),
     path.join(os.homedir(), '.local', 'bin', 'uv'),
-    'uv',
+    path.join(os.homedir(), 'AppData', 'Local', 'uv', 'uv.exe'),
   ];
   for (const c of candidates) {
-    if (c === 'uv') return c;
     if (fs.existsSync(c)) return c;
+  }
+  const which = process.platform === 'win32' ? 'where' : 'which';
+  const result = spawnSync(which, ['uv'], { encoding: 'utf8' });
+  if (result.status === 0 && result.stdout) {
+    return result.stdout.trim().split('\n')[0].trim();
   }
   return undefined;
 }
 
-function getWebviewContent(): string {
+function getWebviewContent(nonce: string): string {
   return /* html */`<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Dictado por Voz</title>
   <style>
@@ -147,6 +179,7 @@ function getWebviewContent(): string {
       justify-content: center;
     }
     #btn:hover { opacity: 0.85; }
+    #btn:disabled { opacity: 0.4; cursor: not-allowed; }
     #btn.recording {
       background: #cc3333;
       border-color: #cc3333;
@@ -187,111 +220,48 @@ function getWebviewContent(): string {
   <div id="result"></div>
   <div id="hint">El texto se copia al portapapeles automáticamente.<br>Pega con Ctrl+V donde lo necesites.</div>
 
-  <script>
+  <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const btn = document.getElementById('btn');
     const status = document.getElementById('status');
     const result = document.getElementById('result');
 
-    let mediaRecorder = null;
-    let chunks = [];
     let isRecording = false;
-    let stream = null;
 
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       if (isRecording) {
-        mediaRecorder.stop();
-        return;
-      }
-
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        mediaRecorder = new MediaRecorder(stream);
-        chunks = [];
-
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunks.push(e.data);
-        };
-
-        mediaRecorder.onstop = async () => {
-          isRecording = false;
-          btn.classList.remove('recording');
-          btn.textContent = '🎤';
-          status.textContent = 'Procesando...';
-          stream.getTracks().forEach(t => t.stop());
-
-          const blob = new Blob(chunks, { type: 'audio/webm' });
-          const wav = await convertToWav(blob);
-          const base64 = arrayBufferToBase64(wav);
-          vscode.postMessage({ type: 'audio', data: base64 });
-        };
-
-        mediaRecorder.start();
+        vscode.postMessage({ type: 'stop' });
+        btn.disabled = true;
+      } else {
         isRecording = true;
         btn.classList.add('recording');
         btn.textContent = '⏹';
-        status.textContent = 'Grabando... (pulsa para detener)';
         result.textContent = '';
-      } catch (err) {
-        status.textContent = 'Error: no se pudo acceder al micrófono';
-        console.error(err);
+        status.textContent = 'Iniciando grabación...';
+        vscode.postMessage({ type: 'start' });
       }
     });
-
-    async function convertToWav(blob) {
-      const arrayBuffer = await blob.arrayBuffer();
-      const audioCtx = new AudioContext({ sampleRate: 16000 });
-      const decoded = await audioCtx.decodeAudioData(arrayBuffer);
-      return encodeWav(decoded);
-    }
-
-    function encodeWav(audioBuffer) {
-      const samples = audioBuffer.getChannelData(0);
-      const sampleRate = audioBuffer.sampleRate;
-      const dataLen = samples.length * 2;
-      const buf = new ArrayBuffer(44 + dataLen);
-      const view = new DataView(buf);
-
-      const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-      writeStr(0, 'RIFF');
-      view.setUint32(4, 36 + dataLen, true);
-      writeStr(8, 'WAVE');
-      writeStr(12, 'fmt ');
-      view.setUint32(16, 16, true);
-      view.setUint16(20, 1, true);    // PCM
-      view.setUint16(22, 1, true);    // mono
-      view.setUint32(24, sampleRate, true);
-      view.setUint32(28, sampleRate * 2, true);
-      view.setUint16(32, 2, true);
-      view.setUint16(34, 16, true);
-      writeStr(36, 'data');
-      view.setUint32(40, dataLen, true);
-
-      let off = 44;
-      for (let i = 0; i < samples.length; i++) {
-        const s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
-        off += 2;
-      }
-      return buf;
-    }
-
-    function arrayBufferToBase64(buffer) {
-      const bytes = new Uint8Array(buffer);
-      let binary = '';
-      for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
-      return btoa(binary);
-    }
 
     window.addEventListener('message', (event) => {
       const msg = event.data;
       if (msg.type === 'result') {
+        isRecording = false;
+        btn.disabled = false;
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
         status.textContent = '✓ Copiado al portapapeles';
         result.textContent = msg.text;
       } else if (msg.type === 'status') {
         status.textContent = msg.text;
+        if (msg.text.includes('Grabando')) {
+          btn.disabled = false;
+        }
       } else if (msg.type === 'error') {
-        status.textContent = '✗ Error al transcribir';
+        isRecording = false;
+        btn.disabled = false;
+        btn.classList.remove('recording');
+        btn.textContent = '🎤';
+        status.textContent = '✗ Error';
         result.textContent = msg.text;
       }
     });
@@ -300,4 +270,6 @@ function getWebviewContent(): string {
 </html>`;
 }
 
-export function deactivate() {}
+export function deactivate() {
+  killPythonProcess();
+}

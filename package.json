@@ -1,4 +1,5 @@
 {
+  "publisher": "mleon",
   "name": "vscode-whisper-dictation",
   "displayName": "Dictado por Voz",
   "description": "Dicta texto con Whisper local y cópialo al portapapeles",
