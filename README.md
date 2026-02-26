@@ -20,18 +20,12 @@
 
 ## Installation
 
-Download the latest `.vsix` and run the update script:
-
-```powershell
-.\update.ps1
-```
-
-Or manually:
-
 ```powershell
 gh release download --repo mleonmendiola-ionos/vscode-whisper-dictation --pattern "*.vsix"
 code --install-extension vscode-whisper-dictation-*.vsix
 ```
+
+Updates are detected automatically on VS Code startup.
 
 ## Usage
 
