@@ -3,6 +3,11 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.5] - 2026-02-26
+
+### Fixed
+- Auto-update now runs on VS Code startup (`onStartupFinished`) instead of only when opening the panel
+
 ## [1.2.4] - 2026-02-26
 
 ### Changed
