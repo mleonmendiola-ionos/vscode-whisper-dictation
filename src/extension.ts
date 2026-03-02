@@ -10,6 +10,7 @@ let panel: vscode.WebviewPanel | undefined;
 let pythonProcess: ChildProcessWithoutNullStreams | undefined;
 let stdoutBuffer = '';
 let pythonReady  = false;
+let activeDevice = 'cpu';
 let daemonDiedUnexpectedly = false;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -59,7 +60,8 @@ export function activate(context: vscode.ExtensionContext) {
       // Send current state to the newly opened panel
       panel.webview.postMessage({
         type: 'state',
-        state: pythonReady ? 'READY' : 'LOADING'
+        state: pythonReady ? 'READY' : 'LOADING',
+        text: pythonReady ? activeDevice : undefined
       });
     }
   });
@@ -85,6 +87,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   const config = vscode.workspace.getConfiguration('whisper-dictation');
   const model = config.get<string>('model', 'small');
   const lang = config.get<string>('language', 'es');
+  const device = config.get<string>('device', 'auto');
 
   stdoutBuffer = '';
   pythonReady  = false;
@@ -93,7 +96,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   pythonProcess = spawn(
     uvPath,
     ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper',
-     'python', scriptPath, model, lang, cacheDir],
+     'python', scriptPath, model, lang, cacheDir, device],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   ) as ChildProcessWithoutNullStreams;
 
@@ -129,9 +132,12 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
 function handlePythonLine(line: string) {
   if (line === 'LOADING') {
     panel?.webview.postMessage({ type: 'state', state: 'LOADING' });
-  } else if (line === 'READY') {
+  } else if (line === 'DOWNLOADING') {
+    panel?.webview.postMessage({ type: 'state', state: 'DOWNLOADING' });
+  } else if (line.startsWith('READY')) {
     pythonReady = true;
-    panel?.webview.postMessage({ type: 'state', state: 'READY' });
+    activeDevice = line.includes(':') ? line.split(':')[1] : 'cpu';
+    panel?.webview.postMessage({ type: 'state', state: 'READY', text: activeDevice });
   } else if (line === 'RECORDING') {
     panel?.webview.postMessage({ type: 'state', state: 'RECORDING' });
   } else if (line.startsWith('RESULT:')) {
@@ -292,10 +298,16 @@ function getWebviewContent(nonce: string): string {
     const status = document.getElementById('status');
     const result = document.getElementById('result');
 
-    // States: LOADING | READY | RECORDING | TRANSCRIBING | ERROR | DEAD
+    // States: DOWNLOADING | LOADING | READY | RECORDING | TRANSCRIBING | ERROR | DEAD
     function setUiState(state, text) {
       btn.classList.remove('recording', 'loading');
       switch (state) {
+        case 'DOWNLOADING':
+          btn.disabled = true;
+          btn.classList.add('loading');
+          btn.textContent = '⬇';
+          status.textContent = 'Downloading model (first time only)...';
+          break;
         case 'LOADING':
           btn.disabled = true;
           btn.classList.add('loading');
@@ -305,7 +317,8 @@ function getWebviewContent(nonce: string): string {
         case 'READY':
           btn.disabled = false;
           btn.textContent = '🎤';
-          status.textContent = 'Ready to record';
+          const deviceLabel = text === 'cuda' ? 'GPU' : 'CPU';
+          status.textContent = 'Ready (' + deviceLabel + ')';
           break;
         case 'RECORDING':
           btn.disabled = false;

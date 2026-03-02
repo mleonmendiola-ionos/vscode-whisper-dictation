@@ -52,12 +52,30 @@
           "type": "string",
           "default": "small",
           "enum": ["tiny", "base", "small", "medium", "large-v3"],
-          "description": "Whisper model size"
+          "enumDescriptions": [
+            "Tiny (~75 MB, fastest loading, lower accuracy)",
+            "Base (~145 MB, fast loading, good accuracy)",
+            "Small (~480 MB, balanced speed and accuracy)",
+            "Medium (~1.5 GB, slower loading, high accuracy)",
+            "Large v3 (~3 GB, slowest loading, best accuracy)"
+          ],
+          "description": "Whisper model size. Smaller models load faster but are less accurate."
         },
         "whisper-dictation.language": {
           "type": "string",
           "default": "es",
           "description": "Language code for transcription (e.g. es, en, de)"
+        },
+        "whisper-dictation.device": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "cpu", "cuda"],
+          "enumDescriptions": [
+            "Auto-detect: use GPU if available, otherwise CPU",
+            "CPU only (slower but always works)",
+            "GPU with CUDA (much faster, requires NVIDIA GPU and CUDA drivers)"
+          ],
+          "description": "Inference device for the Whisper model"
         }
       }
     }
