@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Recording and transcription daemon with faster-whisper.
-Usage: python record_transcribe.py <model_name> <language> <cache_dir>
-Protocol: LOADING → READY → (START → RECORDING → STOP → RESULT/ERROR) × N
+Usage: python record_transcribe.py <model_name> <language> <cache_dir> [device]
+Protocol: DOWNLOADING/LOADING → READY:<device> → (START → RECORDING → STOP → RESULT/ERROR) × N
 """
 import sys, os, threading, queue
 sys.stdout.reconfigure(encoding='utf-8')
@@ -11,9 +11,10 @@ import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
 
-model_name = sys.argv[1] if len(sys.argv) > 1 else "small"
-language   = sys.argv[2] if len(sys.argv) > 2 else "es"
-cache_dir  = sys.argv[3] if len(sys.argv) > 3 else None
+model_name  = sys.argv[1] if len(sys.argv) > 1 else "small"
+language    = sys.argv[2] if len(sys.argv) > 2 else "es"
+cache_dir   = sys.argv[3] if len(sys.argv) > 3 else None
+device_pref = sys.argv[4] if len(sys.argv) > 4 else "auto"
 
 SAMPLE_RATE    = 16000
 CHANNELS       = 1
@@ -36,13 +37,33 @@ def stdin_reader():
 
 threading.Thread(target=stdin_reader, daemon=True).start()
 
-emit("LOADING")
+def detect_device(preference):
+    """Resolve device preference to actual device and compute type."""
+    if preference == "cpu":
+        return "cpu", "int8"
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda", "float16"
+    except Exception:
+        pass
+    return "cpu", "int8"
+
+def is_model_cached(name, directory):
+    """Check if the model is already downloaded in the cache."""
+    if not directory:
+        return False
+    hub_dir = os.path.join(directory, f"models--Systran--faster-whisper-{name}")
+    return os.path.isdir(hub_dir)
+
+device, compute_type = detect_device(device_pref)
+emit("LOADING" if is_model_cached(model_name, cache_dir) else "DOWNLOADING")
 try:
-    model = WhisperModel(model_name, device="cpu", compute_type="int8", download_root=cache_dir)
+    model = WhisperModel(model_name, device=device, compute_type=compute_type, download_root=cache_dir)
 except Exception as e:
     emit(f"ERROR:Could not load model: {e}")
     sys.exit(1)
-emit("READY")
+emit(f"READY:{device}")
 
 while True:
     cmd = cmd_queue.get()
