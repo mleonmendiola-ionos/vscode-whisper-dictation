@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Recording and transcription daemon with faster-whisper.
-Usage: python record_transcribe.py <model_name> <language> <cache_dir> [device]
+Usage: python record_transcribe.py <model_name> <language> <cache_dir> [device] [max_seconds]
 Protocol: DOWNLOADING/LOADING → READY:<device> → (START → RECORDING → STOP → RESULT/ERROR) × N
 """
 import sys, os, threading, queue
@@ -15,13 +15,14 @@ model_name  = sys.argv[1] if len(sys.argv) > 1 else "small"
 language    = sys.argv[2] if len(sys.argv) > 2 else "es"
 cache_dir   = sys.argv[3] if len(sys.argv) > 3 else None
 device_pref = sys.argv[4] if len(sys.argv) > 4 else "auto"
+max_seconds = int(sys.argv[5]) if len(sys.argv) > 5 else 300
 
 SAMPLE_RATE    = 16000
 CHANNELS       = 1
 DTYPE          = "int16"
 CHUNK_FRAMES   = int(SAMPLE_RATE * 0.1)
 MIN_SECONDS    = 0.3
-MAX_SECONDS    = 300  # 5 minutes
+MAX_SECONDS    = max_seconds
 
 def emit(line):
     sys.stdout.write(line + "\n")

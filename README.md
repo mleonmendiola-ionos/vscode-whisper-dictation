@@ -36,6 +36,16 @@ Updates are detected automatically on VS Code startup.
 5. Click **⏹** to stop — the text appears in the panel and is copied to the clipboard
 6. Paste with **Ctrl+V** wherever you need it
 
+### Keyboard shortcuts
+
+| Shortcut | Scope | Action |
+|----------|-------|--------|
+| **Ctrl+Shift+V** | Anywhere | Open/reveal the voice panel |
+| **Ctrl+Shift+R** | When panel is open | Start/stop recording (toggle) |
+| **Hold Space** | When panel is focused | Push-to-talk (hold to record, release to stop) |
+
+All shortcuts are customizable via VS Code's keyboard shortcuts settings.
+
 ## Available Models
 
 | Model   | Speed     | Accuracy | Approx. VRAM |
@@ -44,7 +54,7 @@ Updates are detected automatically on VS Code startup.
 | `small` | ⚡⚡       | ★★★      | ~1 GB        |
 | `medium`| ⚡         | ★★★★     | ~2.5 GB      |
 
-`small` is used by default. To change it, edit the argument in `extension.ts`.
+`small` is used by default. Change it in VS Code Settings > Voice Dictation.
 
 ## How it Works
 

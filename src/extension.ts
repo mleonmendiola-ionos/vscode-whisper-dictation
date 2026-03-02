@@ -11,6 +11,8 @@ let pythonProcess: ChildProcessWithoutNullStreams | undefined;
 let stdoutBuffer = '';
 let pythonReady  = false;
 let activeDevice = 'cpu';
+let isRecording = false;
+let isTranscribing = false;
 let daemonDiedUnexpectedly = false;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -37,7 +39,10 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     const nonce = crypto.randomBytes(16).toString('hex');
-    panel.webview.html = getWebviewContent(nonce);
+    const config = vscode.workspace.getConfiguration('whisper-dictation');
+    const maxSeconds = config.get<number>('maxRecordingSeconds', 300);
+    panel.webview.html = getWebviewContent(nonce, maxSeconds);
+    vscode.commands.executeCommand('setContext', 'whisperDictation.panelVisible', true);
 
     panel.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'start') {
@@ -50,12 +55,17 @@ export function activate(context: vscode.ExtensionContext) {
     // Don't kill the daemon when panel closes — keep it alive for reuse
     panel.onDidDispose(() => {
       panel = undefined;
+      isRecording = false;
+      isTranscribing = false;
+      vscode.commands.executeCommand('setContext', 'whisperDictation.panelVisible', false);
     });
 
     // If daemon died while panel was closed, respawn it now
     if (daemonDiedUnexpectedly || !pythonProcess) {
       daemonDiedUnexpectedly = false;
       spawnPythonDaemon(context);
+    } else if (isRecording) {
+      panel.webview.postMessage({ type: 'state', state: 'RECORDING' });
     } else {
       // Send current state to the newly opened panel
       panel.webview.postMessage({
@@ -67,6 +77,17 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(disposable);
+
+  const toggleRecording = vscode.commands.registerCommand('whisper-dictation.toggleRecording', () => {
+    if (!panel) return;
+    if (isRecording) {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
+  context.subscriptions.push(toggleRecording);
 }
 
 function spawnPythonDaemon(context: vscode.ExtensionContext) {
@@ -88,6 +109,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   const model = config.get<string>('model', 'small');
   const lang = config.get<string>('language', 'es');
   const device = config.get<string>('device', 'auto');
+  const maxSeconds = config.get<number>('maxRecordingSeconds', 300);
 
   stdoutBuffer = '';
   pythonReady  = false;
@@ -96,7 +118,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   pythonProcess = spawn(
     uvPath,
     ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper',
-     'python', scriptPath, model, lang, cacheDir, device],
+     'python', scriptPath, model, lang, cacheDir, device, String(maxSeconds)],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   ) as ChildProcessWithoutNullStreams;
 
@@ -117,6 +139,8 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   pythonProcess.on('close', (_code: number | null) => {
     pythonProcess = undefined;
     pythonReady   = false;
+    isRecording   = false;
+    isTranscribing = false;
     daemonDiedUnexpectedly = true;
     panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
   });
@@ -125,6 +149,8 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
     vscode.window.showErrorMessage(`Failed to start Python: ${err.message}`);
     panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
     pythonProcess = undefined;
+    isRecording = false;
+    isTranscribing = false;
     daemonDiedUnexpectedly = true;
   });
 }
@@ -141,11 +167,15 @@ function handlePythonLine(line: string) {
   } else if (line === 'RECORDING') {
     panel?.webview.postMessage({ type: 'state', state: 'RECORDING' });
   } else if (line.startsWith('RESULT:')) {
+    isRecording = false;
+    isTranscribing = false;
     const text = line.slice('RESULT:'.length);
     vscode.env.clipboard.writeText(text);
     vscode.window.showInformationMessage(`✓ Copied: "${text}"`);
     panel?.webview.postMessage({ type: 'result', text });
   } else if (line.startsWith('ERROR:')) {
+    isRecording = false;
+    isTranscribing = false;
     const msg = line.slice('ERROR:'.length);
     vscode.window.showErrorMessage(`Error: ${msg}`);
     panel?.webview.postMessage({ type: 'state', state: 'ERROR', text: msg });
@@ -162,8 +192,10 @@ function startRecording() {
     vscode.window.showWarningMessage('The model is still loading. Please wait a moment.');
     return;
   }
+  if (isTranscribing) return;
   try {
     pythonProcess.stdin.write('START\n');
+    isRecording = true;
   } catch {
     // process already terminated
   }
@@ -173,9 +205,13 @@ function stopRecording() {
   if (!pythonProcess) return;
   try {
     pythonProcess.stdin.write('STOP\n');
+    isRecording = false;
+    isTranscribing = true;
     panel?.webview.postMessage({ type: 'state', state: 'TRANSCRIBING' });
   } catch {
     // Fix 4: If stdin.write throws, the process is dead — show READY or DEAD, not TRANSCRIBING
+    isRecording = false;
+    isTranscribing = false;
     panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
   }
 }
@@ -205,7 +241,7 @@ function findUv(): string | undefined {
   return undefined;
 }
 
-function getWebviewContent(nonce: string): string {
+function getWebviewContent(nonce: string, maxSeconds: number): string {
   return /* html */`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -290,7 +326,7 @@ function getWebviewContent(nonce: string): string {
   <button id="btn" disabled title="Loading model...">⏳</button>
   <div id="status">Loading model...</div>
   <div id="result"></div>
-  <div id="hint">Text is automatically copied to the clipboard.<br>Paste with Ctrl+V wherever you need it.</div>
+  <div id="hint">Text is automatically copied to the clipboard.<br>Paste with Ctrl+V wherever you need it.<br>Hold Space to push-to-talk &middot; Ctrl+Shift+R to toggle from anywhere</div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -298,8 +334,25 @@ function getWebviewContent(nonce: string): string {
     const status = document.getElementById('status');
     const result = document.getElementById('result');
 
+    let currentState = 'LOADING';
+    const maxSeconds = ${maxSeconds};
+    let recordingTimer = null;
+    let recordingStart = 0;
+
+    function fmtTime(s) {
+      const m = Math.floor(s / 60);
+      const sec = s % 60;
+      return m + ':' + String(sec).padStart(2, '0');
+    }
+
+    function stopTimer() {
+      if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
+    }
+
     // States: DOWNLOADING | LOADING | READY | RECORDING | TRANSCRIBING | ERROR | DEAD
     function setUiState(state, text) {
+      currentState = state;
+      if (state !== 'RECORDING') stopTimer();
       btn.classList.remove('recording', 'loading');
       switch (state) {
         case 'DOWNLOADING':
@@ -324,7 +377,12 @@ function getWebviewContent(nonce: string): string {
           btn.disabled = false;
           btn.classList.add('recording');
           btn.textContent = '⏹';
-          status.textContent = 'Recording...';
+          recordingStart = Date.now();
+          status.textContent = 'Recording... 0:00 / ' + fmtTime(maxSeconds);
+          recordingTimer = setInterval(() => {
+            const elapsed = Math.floor((Date.now() - recordingStart) / 1000);
+            status.textContent = 'Recording... ' + fmtTime(elapsed) + ' / ' + fmtTime(maxSeconds);
+          }, 1000);
           break;
         case 'TRANSCRIBING':
           btn.disabled = true;
@@ -352,6 +410,23 @@ function getWebviewContent(nonce: string): string {
         result.textContent = '';
         vscode.postMessage({ type: 'start' });
       }
+    });
+
+    // Push-to-talk: hold Space to record, release to stop
+    document.addEventListener('keydown', (e) => {
+      if (e.code !== 'Space' || e.repeat) return;
+      if (currentState !== 'READY') return;
+      e.preventDefault();
+      result.textContent = '';
+      vscode.postMessage({ type: 'start' });
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.code !== 'Space') return;
+      if (currentState !== 'RECORDING') return;
+      e.preventDefault();
+      vscode.postMessage({ type: 'stop' });
+      setUiState('TRANSCRIBING');
     });
 
     window.addEventListener('message', (event) => {
