@@ -3,6 +3,13 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.5.0] - 2026-03-02
+
+### Added
+- Toggle recording shortcut: **Ctrl+Shift+R** starts/stops recording when the panel is open (works from anywhere in VS Code)
+- Push-to-talk: hold **Space** in the voice panel to record, release to stop
+- Configurable maximum recording duration via settings (`whisper-dictation.maxRecordingSeconds`)
+
 ## [1.4.0] - 2026-03-02
 
 ### Added

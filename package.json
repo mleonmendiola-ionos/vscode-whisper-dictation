@@ -3,7 +3,7 @@
   "name": "vscode-whisper-dictation",
   "displayName": "Voice Dictation",
   "description": "Local voice dictation with Whisper. No internet, no APIs. Records, transcribes and copies to clipboard.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "icon": "Logo.png",
   "engines": {
     "vscode": "^1.80.0"
@@ -29,12 +29,22 @@
         "command": "whisper-dictation.toggle",
         "title": "Dictation: Open voice panel",
         "icon": "$(mic)"
+      },
+      {
+        "command": "whisper-dictation.toggleRecording",
+        "title": "Dictation: Start/stop recording",
+        "icon": "$(record)"
       }
     ],
     "keybindings": [
       {
         "command": "whisper-dictation.toggle",
         "key": "ctrl+shift+v"
+      },
+      {
+        "command": "whisper-dictation.toggleRecording",
+        "key": "ctrl+shift+r",
+        "when": "whisperDictation.panelVisible"
       }
     ],
     "menus": {
@@ -76,6 +86,13 @@
             "GPU with CUDA (much faster, requires NVIDIA GPU and CUDA drivers)"
           ],
           "description": "Inference device for the Whisper model"
+        },
+        "whisper-dictation.maxRecordingSeconds": {
+          "type": "number",
+          "default": 300,
+          "minimum": 10,
+          "maximum": 3600,
+          "description": "Maximum recording duration in seconds. Recording stops automatically after this time (default: 300 = 5 minutes)."
         }
       }
     }
