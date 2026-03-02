@@ -3,6 +3,23 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.4.0] - 2026-03-02
+
+### Added
+- Configurable model and language via VS Code settings (`whisper-dictation.model`, `whisper-dictation.language`)
+- 5-minute recording timeout to prevent forgotten recordings
+- Preload Whisper model on extension activation (no more waiting when opening the panel)
+
+### Fixed
+- Redirect limit in auto-update download to prevent infinite redirect loops
+- Temp .vsix file now cleaned up after auto-update install
+- UI no longer stuck on "Transcribing..." if the Python process dies mid-recording
+- Auto-update check throttled to once every 24 hours
+
+### Changed
+- Python script transcribes directly from numpy array instead of writing a temp WAV file
+- Python daemon stays alive when the panel is closed and is reused when reopened
+
 ## [1.3.0] - 2026-02-26
 
 ### Removed

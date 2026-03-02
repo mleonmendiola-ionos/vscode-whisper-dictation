@@ -4,7 +4,7 @@ Recording and transcription daemon with faster-whisper.
 Usage: python record_transcribe.py <model_name> <language> <cache_dir>
 Protocol: LOADING → READY → (START → RECORDING → STOP → RESULT/ERROR) × N
 """
-import sys, os, threading, tempfile, wave
+import sys, os, threading, queue
 sys.stdout.reconfigure(encoding='utf-8')
 sys.stdin.reconfigure(encoding='utf-8')
 import numpy as np
@@ -15,15 +15,26 @@ model_name = sys.argv[1] if len(sys.argv) > 1 else "small"
 language   = sys.argv[2] if len(sys.argv) > 2 else "es"
 cache_dir  = sys.argv[3] if len(sys.argv) > 3 else None
 
-SAMPLE_RATE  = 16000
-CHANNELS     = 1
-DTYPE        = "int16"
-CHUNK_FRAMES = int(SAMPLE_RATE * 0.1)
-MIN_SECONDS  = 0.3
+SAMPLE_RATE    = 16000
+CHANNELS       = 1
+DTYPE          = "int16"
+CHUNK_FRAMES   = int(SAMPLE_RATE * 0.1)
+MIN_SECONDS    = 0.3
+MAX_SECONDS    = 300  # 5 minutes
 
 def emit(line):
     sys.stdout.write(line + "\n")
     sys.stdout.flush()
+
+# Read stdin in a dedicated thread, push commands to a queue
+cmd_queue = queue.Queue()
+
+def stdin_reader():
+    for line in sys.stdin:
+        cmd_queue.put(line.strip())
+    cmd_queue.put(None)  # EOF
+
+threading.Thread(target=stdin_reader, daemon=True).start()
 
 emit("LOADING")
 try:
@@ -34,9 +45,9 @@ except Exception as e:
 emit("READY")
 
 while True:
-    line = sys.stdin.readline()
-    if not line or line.strip() != "START":
-        if not line:
+    cmd = cmd_queue.get()
+    if cmd is None or cmd != "START":
+        if cmd is None:
             break
         continue
 
@@ -57,14 +68,16 @@ while True:
 
     emit("RECORDING")
 
-    while True:
-        stop_line = sys.stdin.readline()
-        if not stop_line:
+    # Wait for STOP command or timeout after MAX_SECONDS
+    timed_out = False
+    try:
+        cmd = cmd_queue.get(timeout=MAX_SECONDS)
+        if cmd is None:
             stream.stop()
             stream.close()
             sys.exit(0)
-        if stop_line.strip() == "STOP":
-            break
+    except queue.Empty:
+        timed_out = True
 
     stream.stop()
     stream.close()
@@ -81,19 +94,13 @@ while True:
         emit("ERROR:Recording too short.")
         continue
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav", prefix="whisper_")
-    os.close(tmp_fd)
+    # Transcribe directly from numpy array (no temp file)
+    audio_float = audio_data.astype(np.float32) / 32768.0
     try:
-        with wave.open(tmp_path, "wb") as wf:
-            wf.setnchannels(CHANNELS)
-            wf.setsampwidth(2)
-            wf.setframerate(SAMPLE_RATE)
-            wf.writeframes(audio_data.tobytes())
-        segments, _ = model.transcribe(tmp_path, language=language)
+        segments, _ = model.transcribe(audio_float, language=language)
         text = "".join(s.text for s in segments).strip()
+        if timed_out:
+            text = text + " [max duration reached]" if text else ""
         emit(f"RESULT:{text}" if text else "ERROR:Empty transcription.")
     except Exception as e:
         emit(f"ERROR:Transcription failed: {e}")
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
