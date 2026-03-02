@@ -10,9 +10,13 @@ let panel: vscode.WebviewPanel | undefined;
 let pythonProcess: ChildProcessWithoutNullStreams | undefined;
 let stdoutBuffer = '';
 let pythonReady  = false;
+let daemonDiedUnexpectedly = false;
 
 export function activate(context: vscode.ExtensionContext) {
   checkForUpdates(context);
+
+  // Preload: spawn the Python daemon at activation so the model loads in the background
+  spawnPythonDaemon(context);
 
   const disposable = vscode.commands.registerCommand('whisper-dictation.toggle', () => {
     if (panel) {
@@ -42,18 +46,30 @@ export function activate(context: vscode.ExtensionContext) {
       }
     });
 
+    // Don't kill the daemon when panel closes — keep it alive for reuse
     panel.onDidDispose(() => {
-      killPythonProcess();
       panel = undefined;
     });
 
-    spawnPythonDaemon(context);
+    // If daemon died while panel was closed, respawn it now
+    if (daemonDiedUnexpectedly || !pythonProcess) {
+      daemonDiedUnexpectedly = false;
+      spawnPythonDaemon(context);
+    } else {
+      // Send current state to the newly opened panel
+      panel.webview.postMessage({
+        type: 'state',
+        state: pythonReady ? 'READY' : 'LOADING'
+      });
+    }
   });
 
   context.subscriptions.push(disposable);
 }
 
 function spawnPythonDaemon(context: vscode.ExtensionContext) {
+  if (pythonProcess) return; // already running
+
   const scriptPath = path.join(context.extensionPath, 'src', 'record_transcribe.py');
   const cacheDir = path.join(context.globalStorageUri.fsPath, 'models');
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -65,13 +81,19 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
     return;
   }
 
+  // Fix 1: Read model and language from VS Code settings
+  const config = vscode.workspace.getConfiguration('whisper-dictation');
+  const model = config.get<string>('model', 'small');
+  const lang = config.get<string>('language', 'es');
+
   stdoutBuffer = '';
   pythonReady  = false;
+  daemonDiedUnexpectedly = false;
 
   pythonProcess = spawn(
     uvPath,
     ['run', '--with', 'sounddevice', '--with', 'numpy', '--with', 'faster-whisper',
-     'python', scriptPath, 'small', 'es', cacheDir],
+     'python', scriptPath, model, lang, cacheDir],
     { stdio: ['pipe', 'pipe', 'pipe'] }
   ) as ChildProcessWithoutNullStreams;
 
@@ -92,6 +114,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
   pythonProcess.on('close', (_code: number | null) => {
     pythonProcess = undefined;
     pythonReady   = false;
+    daemonDiedUnexpectedly = true;
     panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
   });
 
@@ -99,6 +122,7 @@ function spawnPythonDaemon(context: vscode.ExtensionContext) {
     vscode.window.showErrorMessage(`Failed to start Python: ${err.message}`);
     panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
     pythonProcess = undefined;
+    daemonDiedUnexpectedly = true;
   });
 }
 
@@ -143,10 +167,11 @@ function stopRecording() {
   if (!pythonProcess) return;
   try {
     pythonProcess.stdin.write('STOP\n');
+    panel?.webview.postMessage({ type: 'state', state: 'TRANSCRIBING' });
   } catch {
-    // process already terminated
+    // Fix 4: If stdin.write throws, the process is dead — show READY or DEAD, not TRANSCRIBING
+    panel?.webview.postMessage({ type: 'state', state: 'DEAD' });
   }
-  panel?.webview.postMessage({ type: 'state', state: 'TRANSCRIBING' });
 }
 
 function killPythonProcess() {
@@ -331,8 +356,16 @@ function getWebviewContent(nonce: string): string {
 </html>`;
 }
 
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const LAST_UPDATE_CHECK_KEY = 'whisper-dictation.lastUpdateCheck';
+
 function checkForUpdates(context: vscode.ExtensionContext) {
   try {
+    // Fix 5: Throttle — skip if checked less than 24 hours ago
+    const lastCheck = context.globalState.get<number>(LAST_UPDATE_CHECK_KEY, 0);
+    if (Date.now() - lastCheck < UPDATE_CHECK_INTERVAL_MS) return;
+    context.globalState.update(LAST_UPDATE_CHECK_KEY, Date.now());
+
     const currentVersion: string = context.extension.packageJSON.version;
 
     const options = {
@@ -391,17 +424,22 @@ function isNewer(remote: string, local: string): boolean {
   return false;
 }
 
-function downloadAndInstall(url: string, filename: string) {
+function downloadAndInstall(url: string, filename: string, maxRedirects = 5) {
   const tmpDir = os.tmpdir();
   const dest = path.join(tmpDir, filename);
   const file = fs.createWriteStream(dest);
 
-  const get = (targetUrl: string) => {
+  const get = (targetUrl: string, redirectsLeft: number) => {
     https.get(targetUrl, { headers: { 'User-Agent': 'vscode-whisper-dictation' } }, (res) => {
-      // follow redirects (GitHub sends 302 to the CDN)
+      // Fix 2: Follow redirects with a limit
       if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
         res.resume();
-        get(res.headers.location);
+        if (redirectsLeft <= 0) {
+          file.close();
+          vscode.window.showErrorMessage('Failed to download update: too many redirects.');
+          return;
+        }
+        get(res.headers.location, redirectsLeft - 1);
         return;
       }
       if (res.statusCode !== 200) {
@@ -416,6 +454,8 @@ function downloadAndInstall(url: string, filename: string) {
         vscode.commands
           .executeCommand('workbench.extensions.installExtension', vscode.Uri.file(dest))
           .then(() => {
+            // Fix 3: Clean up temp .vsix after install
+            fs.unlink(dest, () => {});
             vscode.window
               .showInformationMessage('Updated! Reload VS Code to apply.', 'Reload')
               .then((choice) => {
@@ -424,6 +464,7 @@ function downloadAndInstall(url: string, filename: string) {
                 }
               });
           }, (err: Error) => {
+            fs.unlink(dest, () => {});
             vscode.window.showErrorMessage(`Failed to install update: ${err.message}`);
           });
       });
@@ -433,7 +474,7 @@ function downloadAndInstall(url: string, filename: string) {
     });
   };
 
-  get(url);
+  get(url, maxRedirects);
 }
 
 export function deactivate() {
