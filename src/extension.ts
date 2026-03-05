@@ -258,86 +258,147 @@ function getWebviewContent(nonce: string, maxSeconds: number): string {
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
-      height: 100vh;
-      gap: 20px;
-      padding: 20px;
+      justify-content: flex-start;
+      min-height: 100vh;
+      overflow-y: auto;
+      gap: 14px;
+      padding: 32px 20px 24px;
     }
     #btn {
-      width: 90px;
-      height: 90px;
+      width: 96px;
+      height: 96px;
       border-radius: 50%;
-      border: 3px solid var(--vscode-button-background);
+      border: none;
       background: var(--vscode-button-background);
       color: var(--vscode-button-foreground);
-      font-size: 36px;
       cursor: pointer;
-      transition: all 0.2s;
+      transition: box-shadow 0.15s, transform 0.1s, background 0.2s;
       display: flex;
       align-items: center;
       justify-content: center;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
+      flex-shrink: 0;
     }
-    #btn:hover { opacity: 0.85; }
-    #btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #btn:not(:disabled):hover {
+      outline: 3px solid var(--vscode-button-background);
+      outline-offset: 4px;
+    }
+    #btn:not(:disabled):active {
+      transform: scale(0.95);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+    }
+    #btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
     #btn.recording {
-      background: #cc3333;
-      border-color: #cc3333;
-      animation: pulse 1s infinite;
+      background: #c0392b;
+      animation: pulse 1.2s ease-in-out infinite;
     }
-    #btn.loading {
-      animation: spin 1.5s linear infinite;
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
+    #btn.recording:not(:disabled):hover { outline-color: #c0392b; }
+    #btn.loading { cursor: not-allowed; opacity: 0.6; box-shadow: none; outline: none; }
+    #btn.loading svg circle { animation: spin 1.2s linear infinite; transform-origin: 12px 12px; }
     @keyframes pulse {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.05); }
+      0%, 100% { transform: scale(1); box-shadow: 0 2px 10px rgba(0,0,0,0.35); }
+      50% { transform: scale(1.06); box-shadow: 0 4px 18px rgba(192,57,43,0.55); }
     }
     @keyframes spin {
       from { transform: rotate(0deg); }
       to   { transform: rotate(360deg); }
     }
+    #btn-hint {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.7;
+      text-align: center;
+      min-height: 1.4em;
+    }
     #status {
       font-size: 13px;
       color: var(--vscode-descriptionForeground);
       text-align: center;
+      transition: color 0.3s;
     }
+    #status.success { color: #4caf50; }
+    #status.error { color: var(--vscode-errorForeground, #f44336); }
     #result {
       background: var(--vscode-input-background);
-      border: 1px solid var(--vscode-input-border);
-      border-radius: 4px;
+      border: 1px solid var(--vscode-input-border, rgba(255,255,255,0.1));
+      border-radius: 6px;
       padding: 12px;
       width: 100%;
-      max-width: 380px;
-      min-height: 60px;
+      max-width: 400px;
+      min-height: 64px;
+      max-height: 200px;
+      overflow-y: auto;
       font-size: 14px;
-      line-height: 1.5;
+      line-height: 1.6;
       word-break: break-word;
+      flex-shrink: 0;
+      scrollbar-width: thin;
+      scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+    }
+    #result::-webkit-scrollbar { width: 6px; }
+    #result::-webkit-scrollbar-thumb {
+      background: var(--vscode-scrollbarSlider-background);
+      border-radius: 3px;
+    }
+    #result::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+    #result.empty::before {
+      content: 'Your transcription will appear here...';
+      color: var(--vscode-descriptionForeground);
+      opacity: 0.5;
+      font-style: italic;
     }
     #hint {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
-      opacity: 0.6;
+      opacity: 0.5;
       text-align: center;
+      line-height: 1.8;
     }
   </style>
 </head>
 <body>
-  <button id="btn" disabled title="Loading model...">⏳</button>
+  <button id="btn" class="loading" disabled title="Loading model...">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" width="36" height="36">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 20"/>
+    </svg>
+  </button>
+  <div id="btn-hint"></div>
   <div id="status">Loading model...</div>
-  <div id="result"></div>
+  <div id="result" class="empty"></div>
   <div id="hint">Text is automatically copied to the clipboard.<br>Paste with Ctrl+V wherever you need it.<br>Hold Space to push-to-talk &middot; Ctrl+Shift+R to toggle from anywhere</div>
 
   <script nonce="${nonce}">
-    const vscode = acquireVsCodeApi();
-    const btn    = document.getElementById('btn');
-    const status = document.getElementById('status');
-    const result = document.getElementById('result');
+    const vscode   = acquireVsCodeApi();
+    const btn      = document.getElementById('btn');
+    const btnHint  = document.getElementById('btn-hint');
+    const status   = document.getElementById('status');
+    const result   = document.getElementById('result');
 
     let currentState = 'LOADING';
     const maxSeconds = ${maxSeconds};
     let recordingTimer = null;
     let recordingStart = 0;
+
+    const ICON_MIC =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="36" height="36">' +
+      '<path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>' +
+      '<path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>' +
+      '</svg>';
+
+    const ICON_STOP =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="36" height="36">' +
+      '<rect x="6" y="6" width="12" height="12" rx="2"/>' +
+      '</svg>';
+
+    const ICON_SPINNER =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" width="36" height="36">' +
+      '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 20"/>' +
+      '</svg>';
+
+    const ICON_WARNING =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="36" height="36">' +
+      '<path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>' +
+      '</svg>';
 
     function fmtTime(s) {
       const m = Math.floor(s / 60);
@@ -349,55 +410,76 @@ function getWebviewContent(nonce: string, maxSeconds: number): string {
       if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
     }
 
+    function setStatus(text, cls) {
+      status.textContent = text;
+      status.className = cls || '';
+    }
+
+    function setResult(text) {
+      result.textContent = text;
+      result.classList.toggle('empty', !text);
+    }
+
     // States: DOWNLOADING | LOADING | READY | RECORDING | TRANSCRIBING | ERROR | DEAD
     function setUiState(state, text) {
       currentState = state;
       if (state !== 'RECORDING') stopTimer();
       btn.classList.remove('recording', 'loading');
+      btn.title = '';
+      btnHint.textContent = '';
       switch (state) {
         case 'DOWNLOADING':
           btn.disabled = true;
           btn.classList.add('loading');
-          btn.textContent = '⬇';
-          status.textContent = 'Downloading model (first time only)...';
+          btn.innerHTML = ICON_SPINNER;
+          btn.title = 'Downloading model...';
+          setStatus('Downloading model (first time only)...');
           break;
         case 'LOADING':
           btn.disabled = true;
           btn.classList.add('loading');
-          btn.textContent = '⏳';
-          status.textContent = 'Loading model...';
+          btn.innerHTML = ICON_SPINNER;
+          btn.title = 'Loading model...';
+          setStatus('Loading model...');
           break;
-        case 'READY':
+        case 'READY': {
           btn.disabled = false;
-          btn.textContent = '🎤';
+          btn.innerHTML = ICON_MIC;
+          btn.title = 'Click to record';
+          btnHint.textContent = 'Click to record \u00b7 Hold Space';
           const deviceLabel = text === 'cuda' ? 'GPU' : 'CPU';
-          status.textContent = 'Ready (' + deviceLabel + ')';
+          setStatus('Ready (' + deviceLabel + ')');
           break;
+        }
         case 'RECORDING':
           btn.disabled = false;
           btn.classList.add('recording');
-          btn.textContent = '⏹';
+          btn.innerHTML = ICON_STOP;
+          btn.title = 'Click to stop';
+          btnHint.textContent = 'Release Space or click to stop';
           recordingStart = Date.now();
-          status.textContent = 'Recording... 0:00 / ' + fmtTime(maxSeconds);
+          setStatus('Recording... 0:00 / ' + fmtTime(maxSeconds));
           recordingTimer = setInterval(() => {
             const elapsed = Math.floor((Date.now() - recordingStart) / 1000);
-            status.textContent = 'Recording... ' + fmtTime(elapsed) + ' / ' + fmtTime(maxSeconds);
+            setStatus('Recording... ' + fmtTime(elapsed) + ' / ' + fmtTime(maxSeconds));
           }, 1000);
           break;
         case 'TRANSCRIBING':
           btn.disabled = true;
-          btn.textContent = '⏳';
-          status.textContent = 'Transcribing...';
+          btn.classList.add('loading');
+          btn.innerHTML = ICON_SPINNER;
+          btn.title = 'Transcribing...';
+          setStatus('Transcribing...');
           break;
         case 'ERROR':
           btn.disabled = true;
-          btn.textContent = '⚠️';
-          status.textContent = text ? ('✗ ' + text) : '✗ Error';
+          btn.innerHTML = ICON_WARNING;
+          setStatus(text ? ('\u2717 ' + text) : '\u2717 Error', 'error');
           break;
         case 'DEAD':
           btn.disabled = true;
-          btn.textContent = '⚠️';
-          status.textContent = 'Process terminated. Close and reopen the panel.';
+          btn.innerHTML = ICON_WARNING;
+          setStatus('Process terminated. Close and reopen the panel.', 'error');
           break;
       }
     }
@@ -407,7 +489,7 @@ function getWebviewContent(nonce: string, maxSeconds: number): string {
         vscode.postMessage({ type: 'stop' });
         setUiState('TRANSCRIBING');
       } else {
-        result.textContent = '';
+        setResult('');
         vscode.postMessage({ type: 'start' });
       }
     });
@@ -417,7 +499,7 @@ function getWebviewContent(nonce: string, maxSeconds: number): string {
       if (e.code !== 'Space' || e.repeat) return;
       if (currentState !== 'READY') return;
       e.preventDefault();
-      result.textContent = '';
+      setResult('');
       vscode.postMessage({ type: 'start' });
     });
 
@@ -435,8 +517,8 @@ function getWebviewContent(nonce: string, maxSeconds: number): string {
         setUiState(msg.state, msg.text);
       } else if (msg.type === 'result') {
         setUiState('READY');
-        status.textContent = '✓ Copied to clipboard';
-        result.textContent = msg.text;
+        setStatus('\u2713 Copied to clipboard', 'success');
+        setResult(msg.text);
       }
     });
   </script>

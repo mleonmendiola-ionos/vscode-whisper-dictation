@@ -3,6 +3,16 @@
 All notable changes to this project are documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.6.0] - 2026-03-05
+
+### Changed
+- Replaced emoji icons with SVG icons for consistent rendering across all operating systems
+- Microphone button now has depth (shadow) and a hover ring to make it clearly interactive
+- Added action hint below the button ("Click to record · Hold Space" / "Release Space or click to stop")
+- Transcript area now has a max height with scroll, custom scrollbar, and an empty-state placeholder
+- Status text turns green on success and red on errors
+- Layout no longer collapses on narrow or short panels
+
 ## [1.5.0] - 2026-03-02
 
 ### Added
